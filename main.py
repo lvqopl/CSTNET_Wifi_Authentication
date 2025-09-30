@@ -30,6 +30,7 @@ LOG_PATH = os.getenv(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "wifi_portal_runner.log"),
 )  # 日志文件路径
 CHROMEDRIVER_PATH = os.getenv("CHROMEDRIVER_PATH")  # 可选：chromedriver 路径（留空走系统默认）
+CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH")  # 可选：指定 Chrome/Chromium 可执行文件
 USERNAME_ENV = "PORTAL_USERNAME"  # 用户名变量名
 PASSWORD_ENV = "PORTAL_PASSWORD"  # 密码变量名
 PORTAL_HEADLESS = os.getenv("PORTAL_HEADLESS", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -107,12 +108,17 @@ def create_webdriver() -> webdriver.Chrome:
     chrome_options.add_argument("--log-level=2")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
 
+    # 指定浏览器二进制（Chromium/Chrome）
+    if CHROME_BINARY_PATH:
+        chrome_options.binary_location = CHROME_BINARY_PATH
+        logging.info("使用指定浏览器：%s", CHROME_BINARY_PATH)
+
     # 无头开关
     if PORTAL_HEADLESS:
         chrome_options.add_argument("--headless=new")
-        logging.info("以无头模式启动 Chrome。")
+        logging.info("以无头模式启动 Chrome/Chromium。")
     else:
-        logging.info("以可见模式启动 Chrome。")
+        logging.info("以可见模式启动 Chrome/Chromium。")
 
     # 关闭图片/通知以提速
     prefs = {
@@ -124,7 +130,14 @@ def create_webdriver() -> webdriver.Chrome:
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
-    service = ChromeService(CHROMEDRIVER_PATH) if CHROMEDRIVER_PATH else ChromeService()
+    # chromedriver 服务
+    if CHROMEDRIVER_PATH:
+        logging.info("使用指定 chromedriver：%s", CHROMEDRIVER_PATH)
+        service = ChromeService(CHROMEDRIVER_PATH)
+    else:
+        logging.info("使用系统/缓存中的 chromedriver。")
+        service = ChromeService()
+
     return webdriver.Chrome(service=service, options=chrome_options)
 
 
