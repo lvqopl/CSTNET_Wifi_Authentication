@@ -22,7 +22,7 @@ PORTAL_TEST_URL=https://www.baidu.com
 PORTAL_CHECK_INTERVAL=5
 PORTAL_REQUEST_TIMEOUT=5
 PORTAL_SELENIUM_TIMEOUT=15
-PORTAL_LOG_PATH=wifi_portal_runner.log
+PORTAL_LOG_PATH=main.log
 
 # 浏览器/驱动（强烈建议指定，避免无网时自动下载失败）
 # 指定 chromedriver 的绝对路径
@@ -37,12 +37,12 @@ PORTAL_HEADLESS=true
 ```
 
 ## 运行（前台常驻脚本）
-- 脚本：`wifi_portal_runner.py`
+- 脚本：`main.py`
 - 行为：每隔 `PORTAL_CHECK_INTERVAL` 秒检测当前 WiFi SSID；只有当连接到 `PORTAL_WIFI_SSID` 且外网不可达时，自动打开门户页面，必要时先“悬停显示+注销”，再在新标签页进入登录页，填入用户名/密码并点击登录。
 
 启动命令：
 ```bash
-python wifi_portal_runner.py
+python main.py
 ```
 日志位置：`PORTAL_LOG_PATH`（默认 `wifi_portal_runner.log`）
 
@@ -79,8 +79,4 @@ python wifi_portal_runner.py
   - macOS 可改为：`/System/Library/PrivateFrameworks/Apple80211.framework/.../airport -I` 解析 `SSID:`，或 `networksetup -getairportnetwork en0`。
 - 浏览器/驱动：安装 macOS 版 Chrome/Chromium 与对应 chromedriver，并设置上述两项路径。
 
-## 仅测试注销（可选）
-- 使用 `portal_logout_tester.py` 仅验证“悬停显示 + 注销点击”是否成功：
-```bash
-python portal_logout_tester.py
-```
+
