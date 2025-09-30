@@ -3,6 +3,7 @@ import os
 import subprocess
 import time
 from typing import Optional
+import socket
 
 import requests
 from dotenv import load_dotenv
@@ -34,6 +35,9 @@ CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH")  # 可选：指定 Chrome/C
 USERNAME_ENV = "PORTAL_USERNAME"  # 用户名变量名
 PASSWORD_ENV = "PORTAL_PASSWORD"  # 密码变量名
 PORTAL_HEADLESS = os.getenv("PORTAL_HEADLESS", "true").strip().lower() in {"1", "true", "yes", "on"}
+FAST_DNS_HOST = os.getenv("PORTAL_FAST_DNS_HOST", "223.5.5.5")  # 快速连通性探测主机（阿里DNS）
+FAST_DNS_PORT = int(os.getenv("PORTAL_FAST_DNS_PORT", "53"))
+CONNECT_TIMEOUT_MS = int(os.getenv("PORTAL_CONNECT_TIMEOUT_MS", "800"))  # TCP 快速探测超时（毫秒）
 
 
 def setup_logging() -> None:
@@ -91,6 +95,20 @@ def has_internet_connectivity() -> bool:
         return False
 
 
+def has_quick_connectivity() -> bool:
+    """使用 TCP 直连 DNS 端口的方式进行亚秒级连通性探测。"""
+    try:
+        with socket.create_connection((FAST_DNS_HOST, FAST_DNS_PORT), CONNECT_TIMEOUT_MS / 1000.0):
+            return True
+    except OSError:
+        return False
+
+
+def is_online() -> bool:
+    """综合判定是否在线：先快速 TCP 探测，失败再回退 HTTP 检测。"""
+    return has_quick_connectivity() or has_internet_connectivity()
+
+
 def create_webdriver() -> webdriver.Chrome:
     """创建并返回 Chrome WebDriver，支持无头开关并优化加载速度。"""
     chrome_options = ChromeOptions()
@@ -144,7 +162,7 @@ def create_webdriver() -> webdriver.Chrome:
 def try_click(driver: webdriver.Chrome, xpath: str) -> bool:
     """等待元素可点击并尝试点击，失败返回 False。"""
     try:
-        element = WebDriverWait(driver, min(SELENIUM_TIMEOUT_SECONDS, 8)).until(
+        element = WebDriverWait(driver, min(SELENIUM_TIMEOUT_SECONDS, 2)).until(
             EC.element_to_be_clickable((By.XPATH, xpath))
         )
         element.click()
@@ -207,7 +225,7 @@ def _locate_nearby_input(element) -> Optional[object]:
 def fill_field(driver: webdriver.Chrome, xpath: str, value: str) -> bool:
     """在指定 XPath 附近定位实际输入控件并填充值，失败返回 False。"""
     try:
-        element = WebDriverWait(driver, min(SELENIUM_TIMEOUT_SECONDS, 8)).until(
+        element = WebDriverWait(driver, min(SELENIUM_TIMEOUT_SECONDS, 1)).until(
             EC.presence_of_element_located((By.XPATH, xpath))
         )
 
@@ -279,67 +297,57 @@ def fill_field(driver: webdriver.Chrome, xpath: str, value: str) -> bool:
 
 
 def hover_to_reveal(driver: webdriver.Chrome, target_xpath: str) -> bool:
-    """通过鼠标悬停与 JS 事件尝试让目标元素变为可见（兼容无头）。
-
-    对目标、本体父级、菜单容器进行 hover/mouseover，并尝试强制显示样式。
-    """
+    """通过鼠标悬停与 JS 事件尝试让目标元素变为可见（兼容无头）。"""
     candidate_xpaths = [
         target_xpath,
-        "/html/body/div[1]/div[2]/ul",  # 你的注销所在菜单容器（根据提供的 XPath 推测）
+        "/html/body/div[1]/div[2]/ul",
         "/html/body/div[1]/div[2]",
-        "/html/body/div[1]",
     ]
 
-    for xp in candidate_xpaths:
-        try:
-            elem = driver.find_element(By.XPATH, xp)
-        except Exception:
-            continue
+    deadline = time.time() + 0.5  # 最多尝试 ~0.5s
+    while time.time() < deadline:
+        for xp in candidate_xpaths:
+            try:
+                elem = driver.find_element(By.XPATH, xp)
+            except Exception:
+                continue
 
-        # 尝试滚动到可见区域
-        try:
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", elem)
-        except Exception:
-            pass
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", elem)
+            except Exception:
+                pass
 
-        # 1) 真实鼠标悬停（可见模式下有效，无头下部分生效）
-        try:
-            ActionChains(driver).move_to_element(elem).perform()
-        except Exception:
-            pass
+            try:
+                ActionChains(driver).move_to_element(elem).perform()
+            except Exception:
+                pass
 
-        # 2) JS 触发多种鼠标事件
-        for ev in ("mouseover", "mousemove", "mouseenter"):
+            for ev in ("mouseover", "mousemove", "mouseenter"):
+                try:
+                    driver.execute_script(
+                        "var e=new Event(arguments[1],{bubbles:true}); arguments[0].dispatchEvent(e);",
+                        elem,
+                        ev,
+                    )
+                except Exception:
+                    pass
+
             try:
                 driver.execute_script(
-                    "var e=new Event(arguments[1],{bubbles:true}); arguments[0].dispatchEvent(e);",
+                    "arguments[0].style.visibility='visible'; arguments[0].style.opacity=1; if (getComputedStyle(arguments[0]).display==='none'){arguments[0].style.display='block';}",
                     elem,
-                    ev,
                 )
             except Exception:
                 pass
 
-        # 3) 若是通过样式隐藏，尝试强制显示
-        try:
-            driver.execute_script(
-                "arguments[0].style.visibility='visible'; arguments[0].style.opacity=1; if (getComputedStyle(arguments[0]).display==='none'){arguments[0].style.display='block';}",
-                elem,
-            )
-        except Exception:
-            pass
-
-        # 小等待让样式过渡
-        time.sleep(0.2)
-
-        # 检查目标是否可见
-        try:
-            WebDriverWait(driver, 1.5).until(
-                EC.visibility_of_element_located((By.XPATH, target_xpath))
-            )
-            return True
-        except Exception:
-            continue
-
+            try:
+                if WebDriverWait(driver, 0.5).until(
+                    EC.visibility_of_element_located((By.XPATH, target_xpath))
+                ):
+                    return True
+            except Exception:
+                continue
+        time.sleep(0.05)
     return False
 
 
@@ -354,7 +362,7 @@ def attempt_logout(driver: webdriver.Chrome, retries: int = 2) -> bool:
         # 优先常规点击
         if try_click(driver, logout_xpath):
             logging.info("第 %s 次尝试：已触发注销。", i + 1)
-            time.sleep(0.3)
+            time.sleep(0.2)
             return True
 
         # 兜底：JS 直接点击
@@ -362,12 +370,12 @@ def attempt_logout(driver: webdriver.Chrome, retries: int = 2) -> bool:
             elem = driver.find_element(By.XPATH, logout_xpath)
             driver.execute_script("arguments[0].click();", elem)
             logging.info("第 %s 次尝试：已通过 JS click 触发注销。", i + 1)
-            time.sleep(0.3)
+            time.sleep(0.2)
             return True
         except Exception:
             pass
 
-        time.sleep(0.2)
+        time.sleep(0.05)
 
     logging.info("未发现可点击的注销按钮。")
     return False
@@ -400,12 +408,12 @@ def wait_for_login_form(driver: webdriver.Chrome, timeout_s: int = 8) -> bool:
         return False
 
 
-def is_login_form_present(driver: webdriver.Chrome, quick_timeout_s: int = 3) -> bool:
+def is_login_form_present(driver: webdriver.Chrome, quick_timeout_s: int = 1) -> bool:
     """快速判断是否在登录页面（两个输入区域出现）。"""
     return wait_for_login_form(driver, timeout_s=quick_timeout_s)
 
 
-def is_logged_in(driver: webdriver.Chrome, quick_timeout_s: int = 2) -> bool:
+def is_logged_in(driver: webdriver.Chrome, quick_timeout_s: int = 1) -> bool:
     """快速判断是否已登录：通过 hover 显示并检查注销按钮是否可见。"""
     logout_xpath = "/html/body/div[1]/div[2]/ul/li[2]/span"
     hover_to_reveal(driver, logout_xpath)
@@ -419,7 +427,7 @@ def is_logged_in(driver: webdriver.Chrome, quick_timeout_s: int = 2) -> bool:
 
 
 def handle_portal_login() -> None:
-    """执行门户登录流程：先打开门户，判断状态；登录页则直接登录，已登录则先注销再登录。"""
+    """执行门户登录流程：先打开门户，优先快速判断已登录；否则再判断登录页并处理。"""
     username = os.getenv(USERNAME_ENV)
     password = os.getenv(PASSWORD_ENV)
 
@@ -438,26 +446,26 @@ def handle_portal_login() -> None:
         logging.info("访问门户页面：%s", PORTAL_URL)
         driver.get(PORTAL_URL)
 
-        # 优先快速判断是否处于登录页
-        if is_login_form_present(driver, quick_timeout_s=4):
-            logging.info("检测到登录表单，直接进行登录。")
-        else:
-            # 若非登录页，判断是否已登录；若已登录则先注销
-            if is_logged_in(driver, quick_timeout_s=3):
-                logging.info("检测到已登录状态，开始注销。")
-                attempt_logout(driver, retries=4)
-            else:
-                logging.info("既非登录页也未识别为已登录，尝试打开新标签页进入登录页。")
-
-            # 打开干净的新标签页，避免重写路径影响
+        # 先快速判断已登录（更省时）
+        if is_logged_in(driver, quick_timeout_s=1):
+            logging.info("检测到已登录状态，开始注销。")
+            attempt_logout(driver, retries=3)
             open_portal_fresh_tab(driver)
-            if not wait_for_login_form(driver, timeout_s=8):
-                logging.info("登录表单未出现，尝试最后一次注销并刷新进入登录页。")
-                attempt_logout(driver, retries=2)
+            if not wait_for_login_form(driver, timeout_s=6):
+                logging.error("注销后未见登录页，放弃本次流程。")
+                return
+        else:
+            # 未识别为已登录，则看是否直接在登录页
+            if not is_login_form_present(driver, quick_timeout_s=1):
+                # 打开新标签页尝试进入登录页
                 open_portal_fresh_tab(driver)
                 if not wait_for_login_form(driver, timeout_s=6):
-                    logging.error("未能进入登录页，放弃本次流程。")
-                    return
+                    # 再尝试一次注销并进入登录页
+                    attempt_logout(driver, retries=2)
+                    open_portal_fresh_tab(driver)
+                    if not wait_for_login_form(driver, timeout_s=6):
+                        logging.error("未能进入登录页，放弃本次流程。")
+                        return
 
         # 2) 填写用户名与密码，并点击登录
         username_xpath = "/html/body/div[2]/div[1]/div/div[3]/div[3]/ul/li[1]/label"
@@ -478,7 +486,7 @@ def handle_portal_login() -> None:
         logging.info("登录已提交，开始快速轮询网络连通性。")
         start_ts = time.time()
         while time.time() - start_ts < 10:
-            if has_internet_connectivity():
+            if is_online():
                 logging.info("网络连通性恢复。")
                 break
             time.sleep(0.5)
@@ -497,7 +505,7 @@ def main_loop() -> None:
             ssid = get_current_ssid()
             if ssid == TARGET_WIFI_SSID:
                 logging.debug("当前连接到目标 WiFi：%s", ssid)
-                if has_internet_connectivity():
+                if is_online():
                     logging.info("网络连通性正常，无需操作。")
                 else:
                     logging.warning("检测到网络不可用，开始门户自动登录流程。")
