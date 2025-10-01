@@ -2,12 +2,13 @@
 科技网掉线自动认证
 
 ## 环境准备
-- 安装 Python 3.10+（Windows/Mac 均可）
-- 安装依赖：
+- [安装 Python 3.10+（Windows/Mac 均可）](https://www.python.org/downloads/)
+- [安装chrome、chromedriver](https://googlechromelabs.github.io/chrome-for-testing/#stable)
+- 注意chrome和chromedriver大版本一致（例如都是141.\*或者136.\*）
+- 安装依赖,终端或者pycharm运行：
 ```bash
 pip install -r requirements.txt
 ```
-
 ## 配置 .env（与脚本同目录）
 创建 `.env` 文件，示例：
 ```ini
@@ -74,7 +75,7 @@ python main.py
   - 已加入“悬停显示+JS 强制显示+JS 点击兜底”的策略；若站点结构变动，请提供新的 Xpath。
 
 ## macOS 说明
-- 脚本主体可直接运行；不好获取 SSID 
+- 脚本主体可直接运行；程序获取不到 SSID 
   - 直接设置wifi名称
 - 浏览器/驱动：安装 macOS 版 Chrome/Chromium 与对应 chromedriver，并设置上述两项路径。
 
