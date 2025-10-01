@@ -1,5 +1,6 @@
 import logging
 import os
+import platform
 import subprocess
 import time
 from typing import Optional
@@ -20,41 +21,62 @@ from selenium.webdriver.support.ui import WebDriverWait
 load_dotenv(override=False)
 
 # 配置项（括号为默认值）
-CHECK_INTERVAL_SECONDS = int(os.getenv("PORTAL_CHECK_INTERVAL", "5"))
-TARGET_WIFI_SSID = os.getenv("PORTAL_WIFI_SSID", "wifi_name")
-PORTAL_URL = os.getenv("PORTAL_URL", "http://10.10.10.9")
-INTERNET_TEST_URL = os.getenv("PORTAL_TEST_URL", "https://www.baidu.com")
-REQUEST_TIMEOUT_SECONDS = int(os.getenv("PORTAL_REQUEST_TIMEOUT", "5"))
-SELENIUM_TIMEOUT_SECONDS = int(os.getenv("PORTAL_SELENIUM_TIMEOUT", "15"))
+CHECK_INTERVAL_SECONDS = int(os.getenv("PORTAL_CHECK_INTERVAL", "1"))  # 检测间隔（秒）
+TARGET_WIFI_SSID = os.getenv("PORTAL_WIFI_SSID", "wifi_name")  # 目标 WiFi SSID
+PORTAL_URL = os.getenv("PORTAL_URL", "http://10.10.10.9")  # 门户地址
+INTERNET_TEST_URL = os.getenv("PORTAL_TEST_URL", "https://www.baidu.com")  # 连通性检测地址
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("PORTAL_REQUEST_TIMEOUT", "2"))  # HTTP 请求超时（秒）
+SELENIUM_TIMEOUT_SECONDS = int(os.getenv("PORTAL_SELENIUM_TIMEOUT", "5"))  # Selenium 等待超时（秒）
 LOG_PATH = os.getenv(
     "PORTAL_LOG_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "wifi_portal_runner_mac.log"),
-)
-CHROMEDRIVER_PATH = os.getenv("CHROMEDRIVER_PATH")
-CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH")
-USERNAME_ENV = "PORTAL_USERNAME"
-PASSWORD_ENV = "PORTAL_PASSWORD"
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "wifi_portal_unified.log"),
+)  # 日志文件路径
+CHROMEDRIVER_PATH = os.getenv("CHROMEDRIVER_PATH")  # 可选：chromedriver 路径（留空走系统默认）
+CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH")  # 可选：指定 Chrome/Chromium 可执行文件
+USERNAME_ENV = "PORTAL_USERNAME"  # 用户名变量名
+PASSWORD_ENV = "PORTAL_PASSWORD"  # 密码变量名
 PORTAL_HEADLESS = os.getenv("PORTAL_HEADLESS", "true").strip().lower() in {"1", "true", "yes", "on"}
-FAST_DNS_HOST = os.getenv("PORTAL_FAST_DNS_HOST", "223.5.5.5")
+FAST_DNS_HOST = os.getenv("PORTAL_FAST_DNS_HOST", "223.5.5.5")  # 快速连通性探测主机（阿里DNS）
 FAST_DNS_PORT = int(os.getenv("PORTAL_FAST_DNS_PORT", "53"))
-CONNECT_TIMEOUT_MS = int(os.getenv("PORTAL_CONNECT_TIMEOUT_MS", "800"))
+CONNECT_TIMEOUT_MS = int(os.getenv("PORTAL_CONNECT_TIMEOUT_MS", "800"))  # TCP 快速探测超时（毫秒）
 
-
+#
+# def setup_logging() -> None:
+#     """初始化日志配置：同时输出到文件与控制台。"""
+#     if logging.getLogger().handlers:
+#         return
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format="%(asctime)s [%(levelname)s] %(message)s",
+#         handlers=[
+#             logging.FileHandler(LOG_PATH, encoding="utf-8"),
+#             logging.StreamHandler(),
+#         ],
+#     )
+#     logging.info("日志初始化完成，输出路径：%s", LOG_PATH)
+#     level = os.getenv("PORTAL_LOG_LEVEL", "INFO").upper()
+#     logging.basicConfig(
+#         level=getattr(logging, level)
+#     )
 def setup_logging() -> None:
+    """初始化日志配置：同时输出到文件与控制台。"""
     if logging.getLogger().handlers:
         return
+
+    level = os.getenv("PORTAL_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, level, logging.INFO),
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(LOG_PATH, encoding="utf-8"),
             logging.StreamHandler(),
         ],
     )
-    logging.info("日志初始化完成，输出路径：%s", LOG_PATH)
+    logging.info("日志初始化完成，输出路径：%s (Level=%s)", LOG_PATH, level)
 
 
 def _run_cmd(cmd: list[str]) -> Optional[str]:
+    """执行命令并返回标准输出，失败返回 None。"""
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return result.stdout
@@ -64,39 +86,73 @@ def _run_cmd(cmd: list[str]) -> Optional[str]:
 
 
 def get_current_ssid() -> Optional[str]:
-    """macOS 获取当前 WiFi SSID。
+    """跨平台获取当前 WiFi SSID。
 
-    优先使用 airport -I；失败则回退 networksetup -getairportnetwork。
+    Windows: 使用 netsh wlan show interfaces
+    macOS: 使用 airport -I 或 networksetup -getairportnetwork
     """
-    # 1) 尝试 airport -I（可读性更好）
-    airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-    out = _run_cmd([airport_path, "-I"])
-    if out:
-        for raw in out.splitlines():
-            line = raw.strip()
-            # 形如：SSID: your_ssid
-            if line.lower().startswith("ssid:"):
-                ssid = line.split(":", 1)[1].strip()
-                logging.debug("airport 检测到 SSID：%s", ssid)
-                return ssid or None
+    system = platform.system().lower()
 
-    # 2) 回退 networksetup -getairportnetwork en0/en1
-    for iface in ("en0", "en1", "en2"):
-        out2 = _run_cmd(["networksetup", "-getairportnetwork", iface])
-        if out2:
-            # 形如：Current Wi-Fi Network: your_ssid
-            if ":" in out2:
+    if system == "windows":
+        # Windows: netsh wlan show interfaces
+        try:
+            result = subprocess.run(
+                ["netsh", "wlan", "show", "interfaces"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            logging.error("执行 netsh 失败：%s", exc)
+            return None
+
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            if line.lower().startswith("ssid") and "bssid" not in line.lower():
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    ssid = parts[1].strip()
+                    logging.debug("检测到 SSID：%s", ssid)
+                    return ssid or None
+        logging.debug("未从 netsh 输出中解析到 SSID。")
+        return None
+
+    elif system == "darwin":  # macOS
+        # 1) 尝试 airport -I（可读性更好）
+        airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+        out = _run_cmd([airport_path, "-I"])
+        if out:
+            for raw in out.splitlines():
+                line = raw.strip()
+                if line.lower().startswith("ssid:"):
+                    ssid = line.split(":", 1)[1].strip()
+                    logging.debug("airport 检测到 SSID：%s", ssid)
+                    return ssid or None
+
+        # 2) 回退 networksetup -getairportnetwork en0/en1
+        for iface in ("en0", "en1", "en2"):
+            out2 = _run_cmd(["networksetup", "-getairportnetwork", iface])
+            if out2 and ":" in out2:
                 ssid = out2.split(":", 1)[1].strip()
                 logging.debug("networksetup(%s) 检测到 SSID：%s", iface, ssid)
                 if ssid and ssid.lower() != "no network":
                     return ssid
-    logging.debug("未从 airport/networksetup 获取到 SSID。")
-    return None
+        logging.debug("未从 airport/networksetup 获取到 SSID。")
+        return None
+
+    else:
+        logging.warning("不支持的操作系统：%s", system)
+        return None
 
 
 def has_internet_connectivity() -> bool:
+    """访问 INTERNET_TEST_URL，状态码 < 400 视为可用。"""
     try:
-        response = requests.get(INTERNET_TEST_URL, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=False)
+        response = requests.get(
+            INTERNET_TEST_URL,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            allow_redirects=False,
+        )
         logging.debug("连通性检测返回状态码：%s", response.status_code)
         return response.status_code < 400
     except requests.RequestException as exc:
@@ -105,6 +161,7 @@ def has_internet_connectivity() -> bool:
 
 
 def has_quick_connectivity() -> bool:
+    """使用 TCP 直连 DNS 端口的方式进行亚秒级连通性探测。"""
     try:
         with socket.create_connection((FAST_DNS_HOST, FAST_DNS_PORT), CONNECT_TIMEOUT_MS / 1000.0):
             return True
@@ -113,16 +170,20 @@ def has_quick_connectivity() -> bool:
 
 
 def is_online() -> bool:
-    return has_quick_connectivity() or has_internet_connectivity()
+    """综合判定是否在线：先快速 TCP 探测，失败再回退 HTTP 检测。"""
+    return has_internet_connectivity()
 
 
 def create_webdriver() -> webdriver.Chrome:
+    """创建并返回 Chrome WebDriver，支持无头开关并优化加载速度。"""
     chrome_options = ChromeOptions()
+    # 加快加载/渲染
     try:
-        chrome_options.page_load_strategy = "eager"
+        chrome_options.page_load_strategy = "eager"  # DOM 完成即继续
     except Exception:
         pass
 
+    # 统一窗口参数（无头需要窗口大小）
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -130,16 +191,19 @@ def create_webdriver() -> webdriver.Chrome:
     chrome_options.add_argument("--log-level=2")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
 
+    # 指定浏览器二进制（Chromium/Chrome）
     if CHROME_BINARY_PATH:
         chrome_options.binary_location = CHROME_BINARY_PATH
         logging.info("使用指定浏览器：%s", CHROME_BINARY_PATH)
 
+    # 无头开关
     if PORTAL_HEADLESS:
         chrome_options.add_argument("--headless=new")
         logging.info("以无头模式启动 Chrome/Chromium。")
     else:
         logging.info("以可见模式启动 Chrome/Chromium。")
 
+    # 关闭图片/通知以提速
     prefs = {
         "profile.managed_default_content_settings.images": 2,
         "profile.default_content_setting_values.notifications": 2,
@@ -149,6 +213,7 @@ def create_webdriver() -> webdriver.Chrome:
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
+    # chromedriver 服务
     if CHROMEDRIVER_PATH:
         logging.info("使用指定 chromedriver：%s", CHROMEDRIVER_PATH)
         service = ChromeService(CHROMEDRIVER_PATH)
@@ -160,6 +225,7 @@ def create_webdriver() -> webdriver.Chrome:
 
 
 def try_click(driver: webdriver.Chrome, xpath: str) -> bool:
+    """等待元素可点击并尝试点击，失败返回 False。"""
     try:
         element = WebDriverWait(driver, min(SELENIUM_TIMEOUT_SECONDS, 2)).until(
             EC.element_to_be_clickable((By.XPATH, xpath))
@@ -175,6 +241,7 @@ def try_click(driver: webdriver.Chrome, xpath: str) -> bool:
 
 
 def _locate_nearby_input(element) -> Optional[object]:
+    """在给定元素附近尝试找到可输入的 input/textarea。"""
     try:
         tag = element.tag_name.lower()
     except Exception:
@@ -183,6 +250,7 @@ def _locate_nearby_input(element) -> Optional[object]:
     if tag in {"input", "textarea"}:
         return element
 
+    # 子孙 input
     try:
         descendants = element.find_elements(By.TAG_NAME, "input")
         if descendants:
@@ -190,18 +258,21 @@ def _locate_nearby_input(element) -> Optional[object]:
     except Exception:
         pass
 
+    # following-sibling input
     try:
         sib = element.find_element(By.XPATH, "following-sibling::input[1]")
         return sib
     except Exception:
         pass
 
+    # preceding-sibling input
     try:
         psib = element.find_element(By.XPATH, "preceding-sibling::input[1]")
         return psib
     except Exception:
         pass
 
+    # 父级子树 input（常见容器层）
     try:
         parent = element.find_element(By.XPATH, "..")
         maybe = parent.find_elements(By.XPATH, ".//input")
@@ -214,13 +285,16 @@ def _locate_nearby_input(element) -> Optional[object]:
 
 
 def fill_field(driver: webdriver.Chrome, xpath: str, value: str) -> bool:
+    """在指定 XPath 附近定位实际输入控件并填充值，失败返回 False。"""
     try:
         element = WebDriverWait(driver, min(SELENIUM_TIMEOUT_SECONDS, 1)).until(
             EC.presence_of_element_located((By.XPATH, xpath))
         )
 
+        # 1) 直接/附近定位输入框
         target = _locate_nearby_input(element)
 
+        # 2) 额外兜底：将提供的 /label 替换为 /input 再尝试
         if target is None and xpath.endswith("/label"):
             try:
                 alt_xpath = xpath[:-6] + "/input"
@@ -234,6 +308,7 @@ def fill_field(driver: webdriver.Chrome, xpath: str, value: str) -> bool:
             logging.error("未能定位输入控件：%s", xpath)
             return False
 
+        # 尝试点击聚焦
         try:
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
         except Exception:
@@ -243,6 +318,7 @@ def fill_field(driver: webdriver.Chrome, xpath: str, value: str) -> bool:
         except Exception:
             pass
 
+        # 清空并输入（send_keys 为首选）
         try:
             target.clear()
         except Exception:
@@ -250,6 +326,7 @@ def fill_field(driver: webdriver.Chrome, xpath: str, value: str) -> bool:
 
         try:
             target.send_keys(value)
+            # 验证值是否写入
             current_val = target.get_attribute("value")
             if (current_val or "").strip() == value:
                 logging.info("已填充字段（send_keys）：%s", xpath)
@@ -257,6 +334,7 @@ def fill_field(driver: webdriver.Chrome, xpath: str, value: str) -> bool:
         except Exception as exc:
             logging.debug("send_keys 异常，将尝试 JS 方式：%s", exc)
 
+        # 回退到 JS 直接赋值并触发事件
         try:
             driver.execute_script(
                 "arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles:true})); arguments[0].dispatchEvent(new Event('change', {bubbles:true}));",
@@ -281,6 +359,7 @@ def fill_field(driver: webdriver.Chrome, xpath: str, value: str) -> bool:
 
 
 def hover_to_reveal(driver: webdriver.Chrome, target_xpath: str) -> bool:
+    """通过鼠标悬停与 JS 事件尝试让目标元素变为可见（兼容无头）。"""
     candidate_xpaths = [
         target_xpath,
         "/html/body/div[1]/div[2]/ul",
@@ -325,7 +404,7 @@ def hover_to_reveal(driver: webdriver.Chrome, target_xpath: str) -> bool:
 
             try:
                 if WebDriverWait(driver, 0.5).until(
-                    EC.visibility_of_element_located((By.XPATH, target_xpath))
+                        EC.visibility_of_element_located((By.XPATH, target_xpath))
                 ):
                     return True
             except Exception:
@@ -335,16 +414,20 @@ def hover_to_reveal(driver: webdriver.Chrome, target_xpath: str) -> bool:
 
 
 def attempt_logout(driver: webdriver.Chrome, retries: int = 2) -> bool:
+    """尝试点击注销按钮，必要时先 hover/强制显示，再重试点击（含 JS 点击兜底）。"""
     logout_xpath = "/html/body/div[1]/div[2]/ul/li[2]/span"
 
     for i in range(max(1, retries)):
+        # 先尝试通过 hover/JS 让其可见
         hover_to_reveal(driver, logout_xpath)
 
+        # 优先常规点击
         if try_click(driver, logout_xpath):
             logging.info("第 %s 次尝试：已触发注销。", i + 1)
             time.sleep(0.2)
             return True
 
+        # 兜底：JS 直接点击
         try:
             elem = driver.find_element(By.XPATH, logout_xpath)
             driver.execute_script("arguments[0].click();", elem)
@@ -361,6 +444,7 @@ def attempt_logout(driver: webdriver.Chrome, retries: int = 2) -> bool:
 
 
 def open_portal_fresh_tab(driver: webdriver.Chrome) -> None:
+    """在新标签页打开门户并切换过去，尽量保持一个活跃标签。"""
     try:
         driver.execute_script("window.open(arguments[0], '_blank');", PORTAL_URL)
         driver.switch_to.window(driver.window_handles[-1])
@@ -371,6 +455,7 @@ def open_portal_fresh_tab(driver: webdriver.Chrome) -> None:
 
 
 def wait_for_login_form(driver: webdriver.Chrome, timeout_s: int = 8) -> bool:
+    """等待用户名与密码区域出现，以判断处于登录页。"""
     username_xpath = "/html/body/div[2]/div[1]/div/div[3]/div[3]/ul/li[1]/label"
     password_xpath = "/html/body/div[2]/div[1]/div/div[3]/div[3]/ul/li[2]/label"
     try:
@@ -386,10 +471,12 @@ def wait_for_login_form(driver: webdriver.Chrome, timeout_s: int = 8) -> bool:
 
 
 def is_login_form_present(driver: webdriver.Chrome, quick_timeout_s: int = 1) -> bool:
+    """快速判断是否在登录页面（两个输入区域出现）。"""
     return wait_for_login_form(driver, timeout_s=quick_timeout_s)
 
 
 def is_logged_in(driver: webdriver.Chrome, quick_timeout_s: int = 1) -> bool:
+    """快速判断是否已登录：通过 hover 显示并检查注销按钮是否可见。"""
     logout_xpath = "/html/body/div[1]/div[2]/ul/li[2]/span"
     hover_to_reveal(driver, logout_xpath)
     try:
@@ -402,6 +489,7 @@ def is_logged_in(driver: webdriver.Chrome, quick_timeout_s: int = 1) -> bool:
 
 
 def handle_portal_login() -> None:
+    """执行门户登录流程：先打开门户，优先快速判断已登录；否则再判断登录页并处理。"""
     username = os.getenv(USERNAME_ENV)
     password = os.getenv(PASSWORD_ENV)
 
@@ -420,7 +508,7 @@ def handle_portal_login() -> None:
         logging.info("访问门户页面：%s", PORTAL_URL)
         driver.get(PORTAL_URL)
 
-        # 优先快速判断是否已登录
+        # 先快速判断已登录（更省时）
         if is_logged_in(driver, quick_timeout_s=1):
             logging.info("检测到已登录状态，开始注销。")
             attempt_logout(driver, retries=3)
@@ -429,16 +517,19 @@ def handle_portal_login() -> None:
                 logging.error("注销后未见登录页，放弃本次流程。")
                 return
         else:
-            # 若非已登录，再判断是否已在登录页
+            # 未识别为已登录，则看是否直接在登录页
             if not is_login_form_present(driver, quick_timeout_s=1):
+                # 打开新标签页尝试进入登录页
                 open_portal_fresh_tab(driver)
                 if not wait_for_login_form(driver, timeout_s=6):
+                    # 再尝试一次注销并进入登录页
                     attempt_logout(driver, retries=2)
                     open_portal_fresh_tab(driver)
                     if not wait_for_login_form(driver, timeout_s=6):
                         logging.error("未能进入登录页，放弃本次流程。")
                         return
 
+        # 2) 填写用户名与密码，并点击登录
         username_xpath = "/html/body/div[2]/div[1]/div/div[3]/div[3]/ul/li[1]/label"
         password_xpath = "/html/body/div[2]/div[1]/div/div[3]/div[3]/ul/li[2]/label"
         login_button_xpath = "/html/body/div[2]/div[1]/div/div[3]/div[5]/div[1]/input"
@@ -467,16 +558,21 @@ def handle_portal_login() -> None:
 
 
 def main_loop() -> None:
+    """前台循环运行：仅当连接到目标 SSID 且无外网连通性时执行登录流程。"""
     setup_logging()
-    logging.info("前台模式启动(macOS)。目标 WiFi：%s，检测间隔：%s 秒，Headless=%s", TARGET_WIFI_SSID, CHECK_INTERVAL_SECONDS, PORTAL_HEADLESS)
+    system_name = platform.system()
+    logging.info("前台模式启动(%s)。目标 WiFi：%s，检测间隔：%s 秒，Headless=%s",
+                 system_name, TARGET_WIFI_SSID, CHECK_INTERVAL_SECONDS, PORTAL_HEADLESS)
 
     while True:
         try:
-            ssid = get_current_ssid()
+            ssid = TARGET_WIFI_SSID#get_current_ssid()
             if ssid == TARGET_WIFI_SSID:
                 logging.debug("当前连接到目标 WiFi：%s", ssid)
                 if is_online():
                     logging.info("网络连通性正常，无需操作。")
+                    time.sleep(CHECK_INTERVAL_SECONDS)
+                    continue
                 else:
                     logging.warning("检测到网络不可用，开始门户自动登录流程。")
                     handle_portal_login()
@@ -489,4 +585,4 @@ def main_loop() -> None:
 
 
 if __name__ == "__main__":
-    main_loop() 
+    main_loop()
