@@ -74,9 +74,8 @@ python main.py
   - 已加入“悬停显示+JS 强制显示+JS 点击兜底”的策略；若站点结构变动，请提供新的 Xpath。
 
 ## macOS 说明
-- 脚本主体可直接运行；需要修改获取 SSID 的方式：
-  - Windows 使用 `netsh wlan show interfaces`；
-  - macOS 可改为：`/System/Library/PrivateFrameworks/Apple80211.framework/.../airport -I` 解析 `SSID:`，或 `networksetup -getairportnetwork en0`。
+- 脚本主体可直接运行；不好获取 SSID 
+  - 直接设置wifi名称
 - 浏览器/驱动：安装 macOS 版 Chrome/Chromium 与对应 chromedriver，并设置上述两项路径。
 
 
