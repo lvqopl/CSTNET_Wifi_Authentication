@@ -20,12 +20,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 load_dotenv(override=False)
 
 # 配置项（括号为默认值）
-CHECK_INTERVAL_SECONDS = int(os.getenv("PORTAL_CHECK_INTERVAL", "5"))  # 检测间隔（秒）
+CHECK_INTERVAL_SECONDS = int(os.getenv("PORTAL_CHECK_INTERVAL", "2"))  # 检测间隔（秒）
 TARGET_WIFI_SSID = os.getenv("PORTAL_WIFI_SSID", "wifi_name")  # 目标 WiFi SSID
 PORTAL_URL = os.getenv("PORTAL_URL", "http://10.10.10.9")  # 门户地址
 INTERNET_TEST_URL = os.getenv("PORTAL_TEST_URL", "https://www.baidu.com")  # 连通性检测地址
-REQUEST_TIMEOUT_SECONDS = int(os.getenv("PORTAL_REQUEST_TIMEOUT", "5"))  # HTTP 请求超时（秒）
-SELENIUM_TIMEOUT_SECONDS = int(os.getenv("PORTAL_SELENIUM_TIMEOUT", "15"))  # Selenium 等待超时（秒）
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("PORTAL_REQUEST_TIMEOUT", "2"))  # HTTP 请求超时（秒）
+SELENIUM_TIMEOUT_SECONDS = int(os.getenv("PORTAL_SELENIUM_TIMEOUT", "3"))  # Selenium 等待超时（秒）
 LOG_PATH = os.getenv(
     "PORTAL_LOG_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "wifi_portal_runner.log"),
